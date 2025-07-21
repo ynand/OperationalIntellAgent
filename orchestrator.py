@@ -1,47 +1,118 @@
 from agents.log_agent import log_agent
 from agents.code_agent import code_agent
-from agents.jira_agent import jira_agent
 from agents.db_agent import db_agent
+from agents.decision_agent import decision_agent
 import os
+import json
+from openai import OpenAI
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.lib.units import inch
+from textwrap import wrap
+import re
+from datetime import datetime
+
+client = OpenAI(api_key="your_api_key")  # Replace with your API key
 
 def orchestrator(user_input):
     print("🤖 Orchestrator: Coordinating agents...\n")
+
+    # Step 1: Run Log Agent
     log_summary = log_agent(user_input)
     print("🔍 Log Summary Generated:\n", log_summary)
-    project_path = "c:/Hack"
-    source_code = collect_project_source_code(project_path)
+    print("🤖 Log Agent completed.\n")
 
-    code_analysis = code_agent(log_summary, source_code)
-    print("💻 Code Analysis Completed:\n", code_analysis)
-    db_result = db_agent({
-        "log_summary": log_summary,
-        "code_analysis": code_analysis,
-        "db_conn_str": "DRIVER={ODBC Driver 17 for SQL Server};SERVER=hostmachine;DATABASE=Test;UID=sa;PWD=titan#12",
-        # "log_file": "db_agent.log"  # optional
-    })
-    # jira_ticket = jira_agent(code_analysis)
-    # print("📝 JIRA Ticket Created:\n", jira_ticket)
+    # Step 2: Use Decision Agent
+    decision_text = decision_agent(log_summary)
+    decision_text_clean = re.sub(r"```(?:json)?|```", "", decision_text).strip()
+    print("🤖 LLM Decision:\n", decision_text)
+    print("🤖 Decision-making completed.\n")
+
+    try:
+        decision = json.loads(decision_text)
+    except json.JSONDecodeError:
+        decision = {"run_code_agent": False, "run_db_agent": False, "reason": "Failed to parse decision"}
+
+    print (decision.get("run_code_agent"), decision.get("run_db_agent"))
+    # Step 3: Execute agents
+    code_analysis = None
+    db_result = None
+
+    if decision.get("run_code_agent"):
+        print("💻 Running Code Agent...")
+        project_path = "c:/Hack"
+        source_code = collect_project_source_code(project_path)
+        code_analysis = code_agent(log_summary, source_code)
+        print("💻 Code Analysis Generated:\n", code_analysis)
+        print("✅ Code Analysis Completed.")
+
+    if decision.get("run_db_agent"):
+        print("🛢️ Running DB Agent...")
+        db_result = db_agent({
+            "log_summary": log_summary,
+            "code_analysis": code_analysis or "",
+            "db_conn_str": "DRIVER={ODBC Driver 17 for SQL Server};SERVER=localhost;DATABASE=Test;UID=sa;PWD=titan#12"
+        })
+        print("🛢️ DB Analysis Result:\n", db_result)
+        print("✅ DB Analysis Completed.")
+
+    # Step 4: Generate Report
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_path = f"output\\analysis_report_{timestamp}.pdf"
+    generate_pdf_report(report_path, log_summary, decision, code_analysis, db_result)
+    print(f"📄 Report generated: {report_path}")
 
     return {
         "log_summary": log_summary,
+        "decision": decision,
         "code_analysis": code_analysis,
-        "db_result": db_result
-        # "jira_ticket": jira_ticket
+        "db_result": db_result,
+        "report_path": report_path
     }
 
 def collect_project_source_code(project_path, max_size_kb=200):
     source_code = ""
     for root, _, files in os.walk(project_path):
         for file in files:
-            if not file.endswith((".py", ".cs", ".js", ".ts")):  # Only code files
+            if not file.endswith((".py", ".cs", ".js", ".ts")):
                 continue
             file_path = os.path.join(root, file)
             try:
                 if os.path.getsize(file_path) > max_size_kb * 1024:
-                    continue  # Skip big files
+                    continue
                 with open(file_path, "r", encoding="utf-8") as f:
                     source_code += f"\n# File: {file_path}\n"
                     source_code += f.read() + "\n"
             except (UnicodeDecodeError, PermissionError, IsADirectoryError):
                 continue
     return source_code
+
+def generate_pdf_report(output_path, log_summary, decision, code_analysis, db_result):
+    doc = SimpleDocTemplate(output_path, pagesize=A4)
+    styles = getSampleStyleSheet()
+    story = []
+
+    def add_section(title, content, style="Heading2", space_after=0.2):
+        story.append(Paragraph(f"<b>{title}</b>", styles[style]))
+        story.append(Spacer(1, space_after * inch))
+        if isinstance(content, dict) or isinstance(content, list):
+            pretty = json.dumps(content, indent=2)
+            for line in pretty.splitlines():
+                story.append(Paragraph(line, styles["Code"]))
+        else:
+            for para in str(content).split("\n"):
+                story.append(Paragraph(para, styles["Normal"]))
+        story.append(Spacer(1, 0.3 * inch))
+
+    add_section("📌 Log Summary", log_summary)
+    add_section("🤖 Decision", decision)
+    add_section("💻 Code Analysis", code_analysis if code_analysis else "Not Executed")
+    add_section("🛢️ DB Analysis", db_result if db_result else "Not Executed")
+
+    doc.build(story)
+
+
+

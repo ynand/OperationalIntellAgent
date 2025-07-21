@@ -23,8 +23,8 @@ if __name__ == "__main__":
     print("🔍 Analyzing logs and generating JIRA ticket...\n")
     result = orchestrator(user_input)
 
-    print("\n🔍 Log Summary:\n", result['log_summary'])
-    print("\n💻 Code Analysis:\n", result['code_analysis'])
-    print("\n📦 DB Agent Result:\n", result['db_result'])
+    # print("\n🔍 Log Summary:\n", result['log_summary'])
+    # print("\n💻 Code Analysis:\n", result['code_analysis'])
+    # print("\n📦 DB Agent Result:\n", result['db_result'])
     # print("\n📝 JIRA Ticket:\n", result['jira_ticket'])
 

@@ -8,3 +8,6 @@ neo4j
 python-dotenv
 ollama
 pyodbc
+reportlab
+datetime
+numpy
