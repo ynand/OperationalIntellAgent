@@ -1,0 +1,10 @@
+langgraph 
+langchain 
+openai
+zep-python 
+pinecone-client 
+weaviate-client 
+neo4j
+python-dotenv
+ollama
+pyodbc
