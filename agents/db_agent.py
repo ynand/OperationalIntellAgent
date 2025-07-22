@@ -1,4 +1,5 @@
 import json
+import re
 from llm_client import chat_with_model
 from vector_db_client import get_relevant_context  # You need to implement this
 
@@ -23,6 +24,15 @@ def db_agent(config):
             f.write(msg + "\n")
         print(msg)
 
+    def clean_sql(raw_sql):
+        """Remove markdown artifacts and unwanted characters from SQL before execution."""
+        # Remove triple backticks and language identifiers like ```sql
+        cleaned = re.sub(r"```[\w]*", "", raw_sql)
+        # Remove any trailing ```
+        cleaned = cleaned.replace("```", "")
+        # Strip whitespace
+        return cleaned.strip()
+
     log_summary = config.get("log_summary", "")
     code_analysis = config.get("code_analysis", "")
     db_conn_str = config.get("db_conn_str")
@@ -43,7 +53,7 @@ def db_agent(config):
                     top_k=3
                 )
 
-                # Ask LLM for the next diagnostic SQL query based on context + RAG
+                # Ask LLM for the next diagnostic SQL query
                 prompt = (
                     f"Relevant context:\n{rag_context}\n"
                     f"Log summary:\n{context['log_summary']}\n"
@@ -59,41 +69,49 @@ def db_agent(config):
                     log("LLM indicated analysis is complete.")
                     break
 
+                # Clean up SQL before execution
+                sql_to_run = clean_sql(sql_suggestion)
+
                 # Execute the suggested SQL query
                 try:
-                    cursor.execute(sql_suggestion)
+                    cursor.execute(sql_to_run)
                     rows = cursor.fetchall()
                     col_names = [desc[0] for desc in cursor.description]
                     result = [dict(zip(col_names, row)) for row in rows]
-                    context["previous_results"].append({"query": sql_suggestion, "result": result})
-                    log(f"Executed: {sql_suggestion}\nResult: {result}")
+                    context["previous_results"].append({"query": sql_to_run, "result": result})
+                    log(f"Executed: {sql_to_run}\nResult: {result}")
                 except Exception as e:
                     error_msg = str(e)
-                    context["previous_results"].append({"query": sql_suggestion, "error": error_msg})
-                    log(f"Error executing: {sql_suggestion}\nError: {error_msg}")
+                    context["previous_results"].append({"query": sql_to_run, "error": error_msg})
+                    log(f"Error executing: {sql_to_run}\nError: {error_msg}")
 
                     # Ask LLM to correct the query
                     correction_prompt = (
                         f"The following SQL Server query failed with error:\n"
-                        f"Query: {sql_suggestion}\n"
+                        f"Query: {sql_to_run}\n"
                         f"Error: {error_msg}\n"
-                        "Please correct the query for SQL Server syntax and return only the corrected T-SQL statement."
+                        "Please correct the query for SQL Server syntax. "
+                        "Do NOT repeat the same query. Only return the corrected T-SQL statement, using valid SQL Server syntax."
                     )
-                    corrected_query = chat_with_model(correction_prompt).strip()
+                    corrected_query_raw = chat_with_model(correction_prompt).strip()
+                    corrected_query = clean_sql(corrected_query_raw)
                     log(f"LLM suggested corrected query:\n{corrected_query}")
 
                     # Try executing the corrected query once
-                    try:
-                        cursor.execute(corrected_query)
-                        rows = cursor.fetchall()
-                        col_names = [desc[0] for desc in cursor.description]
-                        result = [dict(zip(col_names, row)) for row in rows]
-                        context["previous_results"].append({"query": corrected_query, "result": result})
-                        log(f"Executed corrected query: {corrected_query}\nResult: {result}")
-                    except Exception as e2:
-                        error_msg2 = str(e2)
-                        context["previous_results"].append({"query": corrected_query, "error": error_msg2})
-                        log(f"Error executing corrected query: {corrected_query}\nError: {error_msg2}")
+                    if corrected_query != sql_to_run:
+                        try:
+                            cursor.execute(corrected_query)
+                            rows = cursor.fetchall()
+                            col_names = [desc[0] for desc in cursor.description]
+                            result = [dict(zip(col_names, row)) for row in rows]
+                            context["previous_results"].append({"query": corrected_query, "result": result})
+                            log(f"Executed corrected query: {corrected_query}\nResult: {result}")
+                        except Exception as e2:
+                            error_msg2 = str(e2)
+                            context["previous_results"].append({"query": corrected_query, "error": error_msg2})
+                            log(f"Error executing corrected query: {corrected_query}\nError: {error_msg2}")
+                    else:
+                        log("Corrected query is identical to the failed query. Skipping retry.")
             cursor.close()
             conn.close()
         except Exception as e:
@@ -113,7 +131,8 @@ def db_agent(config):
     log(f"LLM analysis:\n{analysis}")
 
     # Return human-readable analysis and query results
-    return {
-        "analysis": analysis,
-        "query_results": context["previous_results"]
-    }
+    return analysis
+    # return {
+    #     "analysis": analysis,
+    #     "query_results": context["previous_results"]
+    # }

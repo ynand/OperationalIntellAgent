@@ -45,7 +45,7 @@ def orchestrator(user_input):
         print("💻 Running Code Agent...")
         project_path = "c:/Hack"
         source_code = collect_project_source_code(project_path)
-        code_analysis = code_agent(log_summary, source_code)
+        # code_analysis = code_agent(log_summary, source_code)
         print("💻 Code Analysis Generated:\n", code_analysis)
         print("✅ Code Analysis Completed.")
 
