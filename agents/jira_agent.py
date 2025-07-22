@@ -1,6 +1,8 @@
 from jira import JIRA
 from llm_client import chat_with_model
 import os
+import glob
+   
  
  
  
@@ -42,11 +44,19 @@ def jira_agent(data):
         basic_auth=(username, password)
     )
 
-    # Sanitize summary: remove newlines and trim, then rewrite to 90-100 words
-    raw_summary = str(data.get('log_summary') or '').replace('\n', ' ').replace('\r', ' ').strip()
-    # Use AI to rewrite summary to 90-100 words, preserving meaning
-    rewrite_prompt = f"Rewrite the following text as a concise summary of 90 to 100 words, preserving all key information and meaning:\n\n{raw_summary}"
+    # Sanitize summary: remove newlines and trim
+    raw_summary = str(data.get('log_summary') or '').replace('\n', ' ').replace('\r', ' ').strip()[:255]
+    # Use AI to rewrite summary, ask for <255 chars, no newlines, and do not cut words
+    rewrite_prompt = (
+    f"Rewrite the following text as a concise Jira ticket summary. "
+    f"Respond with only the rewritten summary and nothing else. "
+    f"Keep it under 255 characters, do not include newlines or extra punctuation. "
+    f"Do NOT preface your answer with any explanation.\n\n"
+    f"{raw_summary}"
+)
+
     summary = chat_with_model(rewrite_prompt)
+    summary = summary.replace('\n', ' ').replace('\r', ' ').strip()
 
     # Add required custom fields (replace with your actual values or logic)
     issue_dict = {
@@ -68,4 +78,14 @@ def jira_agent(data):
 
     new_issue = jira.create_issue(fields=issue_dict)
     print(f"✅ Issue created: {new_issue.key}")
+
+    # Attach the latest PDF from output folder
+    pdf_files = glob.glob(os.path.join(os.path.dirname(__file__), '../output/*.pdf'))
+    if pdf_files:
+        latest_pdf = max(pdf_files, key=os.path.getctime)
+        with open(latest_pdf, 'rb') as f:
+            jira.add_attachment(issue=new_issue, attachment=f, filename=os.path.basename(latest_pdf))
+        print(f"📎 Attached PDF: {os.path.basename(latest_pdf)} to {new_issue.key}")
+    else:
+        print("⚠️ No PDF found in output folder to attach.")
     return new_issue.key
