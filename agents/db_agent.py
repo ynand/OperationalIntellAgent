@@ -1,37 +1,43 @@
 import json
 import re
+import csv
+import os
 from llm_client import chat_with_model
-from vector_db_client import get_relevant_context  # You need to implement this
+from vector_db_client import get_relevant_context  # Ensure this is implemented
 
 def db_agent(config):
     """
-    Uses LLM to iteratively generate diagnostics, runs SQL queries, and returns/explains results.
-    Each SQL suggestion is generated one at a time based on previous results.
+    Uses LLM to iteratively generate diagnostics, runs SQL queries, and exports results to CSV.
     Args:
         config (dict): {
             'log_summary': str,
             'code_analysis': str,
             'db_conn_str': (optional) pyodbc connection string,
-            'log_file': (optional) path to log file
+            'log_file': (optional) path to log file,
+            'output_dir': (optional) directory to save CSV files
         }
     Returns:
-        dict: Human-readable analysis and query results.
+        str: Human-readable analysis.
     """
     import pyodbc
     log_file = config.get("log_file", "db_agent.log")
+    output_dir = config.get("output_dir", "output")
+    os.makedirs(output_dir, exist_ok=True)
+
     def log(msg):
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(msg + "\n")
         print(msg)
 
     def clean_sql(raw_sql):
-        """Remove markdown artifacts and unwanted characters from SQL before execution."""
-        # Remove triple backticks and language identifiers like ```sql
+        # Remove markdown and text before/after SQL
         cleaned = re.sub(r"```[\w]*", "", raw_sql)
-        # Remove any trailing ```
-        cleaned = cleaned.replace("```", "")
-        # Strip whitespace
-        return cleaned.strip()
+        cleaned = cleaned.replace("```", "").strip()
+
+        # Keep only first SELECT/DBCC/EXEC query if multiple exist
+        match = re.search(r"(SELECT|DBCC|EXEC|WITH)\s.*", cleaned, re.IGNORECASE | re.DOTALL)
+        return match.group(0).strip() if match else cleaned
+
 
     log_summary = config.get("log_summary", "")
     code_analysis = config.get("code_analysis", "")
@@ -46,22 +52,46 @@ def db_agent(config):
         try:
             conn = pyodbc.connect(db_conn_str)
             cursor = conn.cursor()
-            for step in range(10):  # Limit to 10 steps to avoid infinite loops
-                # Retrieve relevant context using RAG
-                rag_context = get_relevant_context(
-                    query=json.dumps(context["previous_results"]),
-                    top_k=3
-                )
+            for step in range(10):
+                rag_context = get_relevant_context(query=json.dumps(context["previous_results"]), top_k=3)
 
-                # Ask LLM for the next diagnostic SQL query
-                prompt = (
-                    f"Relevant context:\n{rag_context}\n"
-                    f"Log summary:\n{context['log_summary']}\n"
-                    f"Code analysis:\n{context['code_analysis']}\n"
-                    f"Previous query results:\n{json.dumps(context['previous_results'], indent=2)}\n"
-                    "Suggest the next most relevant SQL Server diagnostic query to help identify root causes. "
-                    "Only return the T-SQL statement, or reply 'DONE' if enough information is available for analysis."
-                )
+                prompt = f"""
+                    You are an expert SQL Server DBA.
+                    Goal: Identify root causes of issues such as:
+                    - Long-running or blocking queries
+                    - Missing indexes
+                    - Memory/TempDB bottlenecks
+                    - Database size or file growth issues
+                    - High waits or deadlocks
+
+                    **Rules for your response:**
+                    - Output ONLY ONE valid T-SQL query.
+                    - Do NOT add explanations, markdown, comments, or multiple queries.
+                    - Do NOT use fictitious columns like 'percentage_used' or 'total_rows_returned_by_cursor_at_row...'.
+                    - If enough information is already collected, reply ONLY with the word: DONE.
+
+                    Example valid query:
+                    SELECT TOP 10
+                        session_id, status, command, blocking_session_id,
+                        wait_type, wait_time, cpu_time, total_elapsed_time
+                    FROM sys.dm_exec_requests
+                    ORDER BY total_elapsed_time DESC;
+
+                    Now, based on this context:
+                    Relevant context:
+                    {context['rag_context']}
+                    Log summary:
+                    {context['log_summary']}
+
+                    Code analysis:
+                    {context['code_analysis']}
+
+                    Previous query results:
+                    {json.dumps(context['previous_results'], indent=2)}
+
+                    Suggest ONE next diagnostic query or reply DONE.
+                    """
+
                 sql_suggestion = chat_with_model(prompt).strip()
                 log(f"LLM suggested SQL query:\n{sql_suggestion}")
 
@@ -69,49 +99,27 @@ def db_agent(config):
                     log("LLM indicated analysis is complete.")
                     break
 
-                # Clean up SQL before execution
                 sql_to_run = clean_sql(sql_suggestion)
 
-                # Execute the suggested SQL query
                 try:
                     cursor.execute(sql_to_run)
                     rows = cursor.fetchall()
                     col_names = [desc[0] for desc in cursor.description]
                     result = [dict(zip(col_names, row)) for row in rows]
                     context["previous_results"].append({"query": sql_to_run, "result": result})
-                    log(f"Executed: {sql_to_run}\nResult: {result}")
+
+                    # Export results to CSV
+                    csv_file_path = os.path.join(output_dir, f"query_result_step_{step+1}.csv")
+                    with open(csv_file_path, mode="w", newline="", encoding="utf-8") as csvfile:
+                        writer = csv.DictWriter(csvfile, fieldnames=col_names)
+                        writer.writeheader()
+                        writer.writerows(result)
+                    log(f"Executed: {sql_to_run}\nExported results to {csv_file_path}")
+
                 except Exception as e:
                     error_msg = str(e)
                     context["previous_results"].append({"query": sql_to_run, "error": error_msg})
                     log(f"Error executing: {sql_to_run}\nError: {error_msg}")
-
-                    # Ask LLM to correct the query
-                    correction_prompt = (
-                        f"The following SQL Server query failed with error:\n"
-                        f"Query: {sql_to_run}\n"
-                        f"Error: {error_msg}\n"
-                        "Please correct the query for SQL Server syntax. "
-                        "Do NOT repeat the same query. Only return the corrected T-SQL statement, using valid SQL Server syntax."
-                    )
-                    corrected_query_raw = chat_with_model(correction_prompt).strip()
-                    corrected_query = clean_sql(corrected_query_raw)
-                    log(f"LLM suggested corrected query:\n{corrected_query}")
-
-                    # Try executing the corrected query once
-                    if corrected_query != sql_to_run:
-                        try:
-                            cursor.execute(corrected_query)
-                            rows = cursor.fetchall()
-                            col_names = [desc[0] for desc in cursor.description]
-                            result = [dict(zip(col_names, row)) for row in rows]
-                            context["previous_results"].append({"query": corrected_query, "result": result})
-                            log(f"Executed corrected query: {corrected_query}\nResult: {result}")
-                        except Exception as e2:
-                            error_msg2 = str(e2)
-                            context["previous_results"].append({"query": corrected_query, "error": error_msg2})
-                            log(f"Error executing corrected query: {corrected_query}\nError: {error_msg2}")
-                    else:
-                        log("Corrected query is identical to the failed query. Skipping retry.")
             cursor.close()
             conn.close()
         except Exception as e:
@@ -119,20 +127,13 @@ def db_agent(config):
     else:
         log("No database connection string provided. Skipping SQL execution.")
 
-    # Ask LLM for analysis and recommendations
     prompt2 = (
         f"Log summary:\n{log_summary}\n\n"
         f"Code analysis:\n{code_analysis}\n\n"
         f"SQL query results:\n{context['previous_results']}\n\n"
-        "Explain likely root causes, recommend query/index/config optimizations, "
-        "and provide optimized SQL if needed. Respond for a human DBA."
+        "Explain likely root causes, recommend query/index/config optimizations, and provide optimized SQL if needed."
     )
     analysis = chat_with_model(prompt2)
     log(f"LLM analysis:\n{analysis}")
 
-    # Return human-readable analysis and query results
     return analysis
-    # return {
-    #     "analysis": analysis,
-    #     "query_results": context["previous_results"]
-    # }

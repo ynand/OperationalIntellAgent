@@ -8,7 +8,7 @@ load_dotenv()
 LLM_API_URL = "https://dev01-llm-platform.itf.csodqa.com/v2/chat/completions"
 LLM_API_TOKEN = os.getenv("LLM_API_TOKEN")  # Or paste your token directly (not recommended for security)
 
-def chat_with_model(prompt: str, model: str = "llama-8b") -> str:
+def chat_with_model(prompt: str, model: str = "anthropic-sonnet-4.0") -> str:
     print(f"🤖 Chatting with custom LLM model '{model}'...\n")
     headers = {
         "Content-Type": "application/json",

@@ -22,7 +22,8 @@ client = OpenAI(api_key="your_api_key")  # Replace with your API key
 
 def orchestrator(user_input):
     print("🤖 Orchestrator: Coordinating agents...\n")
-
+    output_dir = "output\\analysis_{timestamp}".format(timestamp=datetime.now().strftime("%Y%m%d_%H%M%S"))
+    os.makedirs(output_dir, exist_ok=True) 
     # Step 1: Run Log Agent
     log_summary = log_agent(user_input)
     print("🔍 Log Summary Generated:\n", log_summary)
@@ -48,7 +49,7 @@ def orchestrator(user_input):
 
     if decision.get("run_code_agent"):
         print("💻 Running Code Agent...")
-        project_path = "C:\hackathon\OperationalIntellAgent-main"
+        project_path = "C:\hack"
         source_code = collect_project_source_code(project_path)
         code_analysis = code_agent(log_summary, source_code)
         print("💻 Code Analysis Generated:\n", code_analysis)
@@ -59,12 +60,21 @@ def orchestrator(user_input):
         db_result = db_agent({
             "log_summary": log_summary,
             "code_analysis": code_analysis or "",
-            "db_conn_str": "DRIVER={ODBC Driver 17 for SQL Server};SERVER=localhost;DATABASE=Test;UID=sa;PWD=titan#12"
+            "db_conn_str": "DRIVER={ODBC Driver 17 for SQL Server};SERVER=localhost;DATABASE=Test;UID=sa;PWD=titan#12",
+            "log_file": f"{output_dir}\\db_agent.log",
+            "output_dir": output_dir
         })
+
         print("🛢️ DB Analysis Result:\n", db_result)
         print("✅ DB Analysis Completed.")
 
-    # Step 5: Generate JIRA Ticket
+        # Step 5: Generate Report
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_path = f"{output_dir}\\analysis_report_{timestamp}.pdf"
+    generate_pdf_report(report_path, log_summary, decision, code_analysis, db_result, jira_ticket)
+    print(f"📄 Report generated: {report_path}")
+
+    # Step 6: Generate JIRA Ticket
     print("📝 Creating JIRA ticket...")
     # Only pass required arguments to jira_agent
     jira_server = "https://jira-stg.csod.com"  
@@ -82,11 +92,7 @@ def orchestrator(user_input):
     print("📝 JIRA Ticket Created:\n", jira_ticket)
     print("✅ JIRA Ticket Completed.")
 
-    # Step 6: Generate Report
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_path = f"output\\analysis_report_{timestamp}.pdf"
-    generate_pdf_report(report_path, log_summary, decision, code_analysis, db_result, jira_ticket)
-    print(f"📄 Report generated: {report_path}")
+
 
     return {
         "log_summary": log_summary,
