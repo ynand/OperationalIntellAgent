@@ -11,3 +11,4 @@ pyodbc
 reportlab
 datetime
 numpy
+jira
