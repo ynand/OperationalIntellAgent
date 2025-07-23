@@ -58,7 +58,7 @@ def jira_agent(data):
     summary = chat_with_model(rewrite_prompt)
     summary = summary.replace('\n', ' ').replace('\r', ' ').strip()
 
-    # Add required custom fields (replace with your actual values or logic)
+    
     issue_dict = {
         'project': {'key': project_key},
         'summary': summary,
