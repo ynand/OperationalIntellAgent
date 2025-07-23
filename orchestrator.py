@@ -76,10 +76,22 @@ def orchestrator(user_input):
 
     # Step 6: Generate JIRA Ticket
     print("📝 Creating JIRA ticket...")
-    # Only pass required arguments to jira_agent
-    jira_server = "https://jira-stg.csod.com"  
-    jira_username = os.getenv("USER")  
-    jira_password = os.getenv("PASS")  
+    jira_server = "https://jira-stg.csod.com"
+    jira_username = os.getenv("USER")
+    jira_password = os.getenv("PASS")
+
+    # Collect all files from the current output folder
+    def collect_output_files(output_dir):
+        files = []
+        for root, _, file_names in os.walk(output_dir):
+            for f in file_names:
+                file_path = os.path.join(root, f)
+                if os.path.isfile(file_path):
+                    files.append(file_path)
+        return files
+
+    attachments = collect_output_files(output_dir)
+
     jira_ticket = jira_agent({
         "server": jira_server,
         "username": jira_username,
@@ -87,7 +99,8 @@ def orchestrator(user_input):
         "log_summary": log_summary,
         "decision": decision,
         "code_analysis": code_analysis,
-        "db_result": db_result
+        "db_result": db_result,
+        "attachments": attachments
     })
     print("📝 JIRA Ticket Created:\n", jira_ticket)
     print("✅ JIRA Ticket Completed.")

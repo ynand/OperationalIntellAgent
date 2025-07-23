@@ -79,13 +79,14 @@ def jira_agent(data):
     new_issue = jira.create_issue(fields=issue_dict)
     print(f"✅ Issue created: {new_issue.key}")
 
-    # Attach the latest PDF from output folder
-    pdf_files = glob.glob(os.path.join(os.path.dirname(__file__), '../output/*.pdf'))
-    if pdf_files:
-        latest_pdf = max(pdf_files, key=os.path.getctime)
-        with open(latest_pdf, 'rb') as f:
-            jira.add_attachment(issue=new_issue, attachment=f, filename=os.path.basename(latest_pdf))
-        print(f"📎 Attached PDF: {os.path.basename(latest_pdf)} to {new_issue.key}")
+    # Attach all files from the attachments list provided by orchestrator
+    attachments = data.get('attachments', [])
+    if attachments:
+        for file_path in attachments:
+            if os.path.isfile(file_path):
+                with open(file_path, 'rb') as f:
+                    jira.add_attachment(issue=new_issue, attachment=f, filename=os.path.basename(file_path))
+                print(f"📎 Attached: {os.path.basename(file_path)} to {new_issue.key}")
     else:
-        print("⚠️ No PDF found in output folder to attach.")
+        print("⚠️ No files found in attachments to attach.")
     return new_issue.key
